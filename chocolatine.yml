@@ -1,0 +1,123 @@
+name: Chocolatine
+
+on:
+  push:
+    branches-ignore:
+      - 'ga-ignore-**'
+  pull_request:
+    branches-ignore:
+      - 'ga-ignore-**'
+
+env:
+  MIRROR_URL: git@github.com:EpitechPGEPromo2029/B-DOP-200-BAR-2-1-chocolatine-achille.bertani.git
+  EXECUTABLES: calc
+
+jobs:
+  check_repo:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if this is the mirror repository
+        id: check
+        run: |
+          if [ "$GITHUB_REPOSITORY" == MIRROR_URL ]; then
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
+
+  check_coding_style:
+    needs: check_repo
+    if: needs.check_repo.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    container: ghcr.io/epitech/coding-style-checker:latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Run coding style
+        run: check.sh $(pwd) $(pwd)
+
+      - name: Display coding style errors
+        if: always()
+        run: |
+          if [ -f coding-style-reports.log ]; then
+            while IFS= read -r line; do
+              file=$(echo "$line" | cut -d: -f1)
+              line_number=$(echo "$line" | cut -d: -f2)
+              error_type=$(echo "$line" | cut -d: -f3)
+              error_message=$(echo "$line" | cut -d: -f4-)
+              echo "::error file=$file,line=$line_number::$error_type: $error_message"
+            done < coding-style-reports.log
+            
+            if [ -s coding-style-reports.log ]; then
+              exit 1
+            fi
+          fi
+
+  check_program_compilation:
+    needs: check_coding_style
+    if: success()
+    runs-on: ubuntu-latest
+    container: epitechcontent/epitest-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Compile
+        timeout-minutes: 2
+        run: make
+
+      - name: Clean
+        run: make clean
+
+      - name: Check executables
+        shell: bash
+        run: |
+          IFS=',' read -ra EXEC_LIST <<< "$EXECUTABLES"
+          for exec_path in "${EXEC_LIST[@]}"; do
+            if [ ! -f "$exec_path" ]; then
+              echo "::error::Executable not found: $exec_path"
+              exit 1
+            fi
+            if [ ! -x "$exec_path" ]; then
+              echo "::error::File is not executable: $exec_path"
+              exit 1
+            fi
+          done
+
+  run_tests:
+    needs: check_program_compilation
+    if: success()
+    runs-on: ubuntu-latest
+    container: epitechcontent/epitest-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Run tests
+        timeout-minutes: 2
+        run: make tests_run
+
+  push_to_mirror:
+    needs: run_tests
+    if: success() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Mirror to Epitech repository
+        uses: pixta-dev/repository-mirroring-action@v1
+        with:
+          target_repo_url: ${{ env.MIRROR_URL }}
+          ssh_private_key: ${{ secrets.EPITECH_SSH_PRIVATE_KEY }}
